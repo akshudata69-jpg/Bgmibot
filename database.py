@@ -1,41 +1,36 @@
-import os
-import psycopg2
-from dotenv import load_dotenv
-
-load_dotenv()
-DB_URL = os.getenv("DATABASE_URL")
-
-def get_connection():
-    # External and Internal Render DBs both require SSL in 2026
-    return psycopg2.connect(DB_URL, sslmode='require')
+import sqlite3
 
 def init_db():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS scammers 
-                   (bgmi_id TEXT PRIMARY KEY, reason TEXT, proof TEXT)''')
+    conn = sqlite3.connect('bgmi_bot.db')
+    c = conn.cursor()
+    # Scammers Table
+    c.execute('''CREATE TABLE IF NOT EXISTS scammers 
+                 (id TEXT PRIMARY KEY, reason TEXT, proof TEXT)''')
+    # Users Table (For Broadcast)
+    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
+    # Pending Reports Table (Approval System)
+    c.execute('''CREATE TABLE IF NOT EXISTS pending_reports 
+                 (report_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, 
+                  scammer_id TEXT, reason TEXT, proof_file_id TEXT)''')
+    # Trusted Sellers Table
+    c.execute('''CREATE TABLE IF NOT EXISTS sellers 
+                 (username TEXT PRIMARY KEY, description TEXT)''')
     conn.commit()
-    cur.close()
     conn.close()
 
-def search_scammer(query_id):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM scammers WHERE bgmi_id = %s", (query_id,))
-    res = cur.fetchone()
-    cur.close()
+def add_user(user_id):
+    conn = sqlite3.connect('bgmi_bot.db')
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
     conn.close()
-    return res
 
-def add_scammer(bgmi_id, reason, proof):
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO scammers (bgmi_id, reason, proof) VALUES (%s, %s, %s) ON CONFLICT (bgmi_id) DO NOTHING", (bgmi_id, reason, proof))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"DB Error: {e}")
-        return False
+def get_all_users():
+    conn = sqlite3.connect('bgmi_bot.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = [row[0] for row in c.fetchall()]
+    conn.close()
+    return users
+
+# Logic for searching, adding scammers, and pending reports goes here...
