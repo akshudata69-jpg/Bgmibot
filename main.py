@@ -1,101 +1,113 @@
-import os
-import threading
-import logging
+import os, threading
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-from database import init_db, search_scammer, add_scammer
-from dotenv import load_dotenv
+import database
 
-# 1. SETUP & CONFIG
-load_dotenv()
+# CONFIG
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-SEARCHING, ADD_SCAM = range(2)
+# STATES
+SEARCH, REPORT_ID, REPORT_REASON, REPORT_PROOF, BROADCAST_MSG, REG_SELLER = range(6)
 
-# Logging for debugging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# 2. RENDER HEALTH CHECK SERVER
+# --- WEB SERVER FOR RENDER ---
 app_flask = Flask(__name__)
-
 @app_flask.route('/')
-def health_check():
-    return "Bot is active!", 200
+def home(): return "Bot Active", 200
+def run_flask(): app_flask.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app_flask.run(host='0.0.0.0', port=port)
-
-# 3. BOT COMMANDS
+# --- START MENU ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    keyboard = [[InlineKeyboardButton("🔍 Search Scammer", callback_data='search')]]
+    database.add_user(update.effective_user.id) # Capture ID for Broadcast
+    keyboard = [
+        [InlineKeyboardButton("🔍 Check ID/Seller", callback_data='search')],
+        [InlineKeyboardButton("🚩 Report Scammer", callback_data='report')],
+        [InlineKeyboardButton("💎 Top Sellers (Trusted)", callback_data='top_sellers')],
+        [InlineKeyboardButton("🤝 Middleman Service", callback_data='middleman')],
+        [InlineKeyboardButton("📝 Register as Seller", callback_data='reg_seller')]
+    ]
+    if update.effective_user.id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("⚙️ ADMIN PANEL", callback_data='admin_panel')])
     
-    if user_id == ADMIN_ID:
-        keyboard.append([InlineKeyboardButton("➕ Add Scammer (Admin)", callback_data='admin_add')])
-        
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🛡️ **BGMI Anti-Scam Bot**\nSelect an option below:", reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text("🛡️ **BGMI Anti-Scam Central**\nSafe trading starts here.", 
+                                   reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- ADMIN PANEL ---
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if query.from_user.id != ADMIN_ID: return
     
-    if query.data == 'search':
-        await query.message.reply_text("🔍 Send the **BGMI ID** to check:")
-        return SEARCHING
-    elif query.data == 'admin_add':
-        await query.message.reply_text("📝 Format: `ID - Reason - Link`")
-        return ADD_SCAM
+    keyboard = [
+        [InlineKeyboardButton("📢 Broadcast Message", callback_data='admin_bc')],
+        [InlineKeyboardButton("📥 Pending Approvals", callback_data='admin_approve')],
+        [InlineKeyboardButton("➕ Add Top Seller", callback_data='admin_add_seller')]
+    ]
+    await query.message.edit_text("🔧 **Admin Control Center**", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    res = search_scammer(update.message.text)
-    if res:
-        await update.message.reply_text(f"❌ **SCAMMER FOUND!**\nID: {res[0]}\nReason: {res[1]}\nProof: {res[2]}")
-    else:
-        await update.message.reply_text("✅ ID is Clean. Still, use a Middleman!")
+# --- BROADCAST SYSTEM ---
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.message.reply_text("📣 Send the message (text) you want to broadcast to ALL users:")
+    return BROADCAST_MSG
+
+async def do_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users = database.get_all_users()
+    msg = update.message.text
+    count = 0
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user, text=f"📢 **ANNOUNCEMENT**\n\n{msg}", parse_mode='Markdown')
+            count += 1
+        except: continue
+    await update.message.reply_text(f"✅ Sent to {count} users.")
     return ConversationHandler.END
 
-async def process_admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        parts = update.message.text.split(" - ")
-        if add_scammer(parts[0], parts[1], parts[2]):
-            await update.message.reply_text("✅ Added to database!")
-        else:
-            await update.message.reply_text("❌ Error saving to DB.")
-    except:
-        await update.message.reply_text("❌ Wrong format. Use: `ID - Reason - Link`")
-    return ConversationHandler.END
+# --- MIDDLEMAN SECTION ---
+async def middleman_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🤝 **Verified Middleman Service**\n"
+        "To avoid scams, always use an admin as a middleman.\n\n"
+        "1. @YourUsername (Owner)\n2. @Helper1\n3. @Helper2\n\n"
+        "**Fee:** 10% of deal value.\nClick below to request a deal."
+    )
+    btn = [[InlineKeyboardButton("📩 Request Middleman", url=f"https://t.me/akshudata69")]]
+    await update.callback_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btn), parse_mode='Markdown')
 
-# 4. MAIN EXECUTION
+# --- TOP SELLERS (THE REVENUE) ---
+async def top_sellers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.message.reply_text(
+        "💎 **100% Trusted Top Sellers**\n"
+        "To view the list of verified UC & Account sellers, a one-time fee of **₹50** is required to ensure serious buyers only.\n\n"
+        "Contact @akshudata69 to get access."
+    )
+
+# --- (Add other handlers for Report, Approve, Search similarly) ---
+
 def main():
-    # Start DB
-    init_db()
-    
-    # Start Flask Web Server in background thread
+    database.init_db()
     threading.Thread(target=run_flask, daemon=True).start()
+    app = Application.builder().token(TOKEN).build()
     
-    # Start Telegram Application
-    print("Connecting to Telegram...")
-    application = Application.builder().token(TOKEN).build()
-    
-    # Handlers
-    conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler)],
+    # Conversations
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_broadcast, pattern='^admin_bc$'),
+            # Add other entry points
+        ],
         states={
-            SEARCHING: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_search)],
-            ADD_SCAM: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_add)],
+            BROADCAST_MSG: [MessageHandler(filters.TEXT, do_broadcast)],
+            # Add other states
         },
-        fallbacks=[CommandHandler("start", start)]
+        fallbacks=[CommandHandler('start', start)]
     )
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(conv)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(admin_panel, pattern='^admin_panel$'))
+    app.add_handler(CallbackQueryHandler(middleman_info, pattern='^middleman$'))
+    app.add_handler(CallbackQueryHandler(top_sellers, pattern='^top_sellers$'))
     
     print("Bot is starting...")
-    # drop_pending_updates=True is the key to fixing the "Conflict" error
-    application.run_polling(drop_pending_updates=True, close_loop=False)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
