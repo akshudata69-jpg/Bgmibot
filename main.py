@@ -4,138 +4,150 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import database
 
-# --- CONFIG ---
+# --- SETTINGS ---
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_ID = "@AKSHARSTORE"
-PORT = int(os.environ.get("PORT", 8080))
 
 # --- STATES ---
-CHECK, R_USER, R_REASON, R_PROOF, REG_DATA = range(5)
+ST_CHECK, ST_REP_USR, ST_REP_TYPE, ST_REP_PROOF, ST_REG, ST_BC = range(6)
 
-# --- WEB SERVER ---
-app_flask = Flask(__name__)
-@app_flask.route('/')
-def home(): return "Bot Running", 200
-def run_flask(): app_flask.run(host='0.0.0.0', port=PORT)
+# --- WEB SERVER (Render Health Check) ---
+server = Flask(__name__)
+@server.route('/')
+def health(): return "SafeDeal Bot Active", 200
+def run_s(): server.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
-# --- FORCE JOIN CHECK ---
-async def is_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- MIDDLEWARE: FORCE JOIN ---
+async def check_join(update, context):
     try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=update.effective_user.id)
-        return member.status in ['member', 'administrator', 'creator']
+        m = await context.bot.get_chat_member(CHANNEL_ID, update.effective_user.id)
+        return m.status in ['member', 'administrator', 'creator']
     except: return False
 
-# --- MAIN MENU ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_member(update, context):
-        kbd = [[InlineKeyboardButton("Join @AKSHARSTORE", url=f"https://t.me/{CHANNEL_ID[1:]}")],
-               [InlineKeyboardButton("✅ I Joined, Check Again", callback_data="start")]]
-        await update.message.reply_text("❌ **Access Denied!**\nYou must join our channel to use this bot.", reply_markup=InlineKeyboardMarkup(kbd))
-        return
-
+# --- UI MENU ---
+def main_menu(uid):
     kbd = [
-        [InlineKeyboardButton("🔍 Check Seller", callback_data="check"), InlineKeyboardButton("🚨 Report Seller", callback_data="report")],
-        [InlineKeyboardButton("🏆 Top Sellers", callback_data="top"), InlineKeyboardButton("🚫 Scammer List", callback_data="scammers")],
-        [InlineKeyboardButton("📝 Register as Seller", callback_data="register")],
-        [InlineKeyboardButton("🛒 Buy Accounts From Us", url="https://t.me/AKSHARSTORE")]
+        [InlineKeyboardButton("🔍 Check Seller", callback_data="m_check"), InlineKeyboardButton("🚨 Report Seller", callback_data="m_rep")],
+        [InlineKeyboardButton("📸 Submit Proof", callback_data="m_rep"), InlineKeyboardButton("📝 Register as Seller", callback_data="m_reg")],
+        [InlineKeyboardButton("🏆 Trusted Sellers", callback_data="m_top"), InlineKeyboardButton("🚫 Scammer List", callback_data="m_scam")],
+        [InlineKeyboardButton("🛒 Buy Accounts", url="https://t.me/AKSHARSTORE"), InlineKeyboardButton("📊 My Activity", callback_data="m_me")]
     ]
-    await update.message.reply_text(f"🛡️ **Welcome to BGMI Trust Bot**\nVerified by {CHANNEL_ID}", reply_markup=InlineKeyboardMarkup(kbd))
+    if uid == ADMIN_ID: kbd.append([InlineKeyboardButton("⚙️ ADMIN PANEL", callback_data="m_admin")])
+    return InlineKeyboardMarkup(kbd)
 
-# --- CHECK SELLER LOGIC ---
-async def check_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.message.reply_text("🔍 Send the @username of the seller:")
-    return CHECK
-
-async def do_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.text.replace("@", "")
-    user = database.get_user(username)
+# --- START COMMAND ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    database.add_or_update_user(update.effective_user.id, update.effective_user.username or "Unknown")
     
-    if not user:
-        await update.message.reply_text("❓ **User not found.**\nThey haven't been registered or reported yet.")
-    else:
-        # User index: 0:id, 1:username, 2:reports, 3:vouches, 4:score, 5:verified, 7:status
-        badge = "👑 VERIFIED" if user[5] else "👤 Standard"
-        text = (f"👤 **User:** @{user[1]}\n"
-                f"🏷️ **Badge:** {badge}\n"
-                f"📊 **Trust Score:** {user[4]}\n"
-                f"✅ **Vouches:** {user[3]} | 🚩 **Reports:** {user[2]}\n"
-                f"📢 **Status:** {user[7]}")
-        await update.message.reply_text(text)
+    if not await check_join(update, context):
+        kbd = [[InlineKeyboardButton("Join @AKSHARSTORE", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+               [InlineKeyboardButton("✅ I Joined, Check Again", callback_data="m_start")]]
+        await update.message.reply_text("👋 **Welcome to SafeDeal Bot**\nYou must join our channel to use this bot.", reply_markup=InlineKeyboardMarkup(kbd))
+        return ConversationHandler.END
+
+    msg = "🔥 **SafeDeal Bot – BGMI Trust System**\nYour trusted platform to avoid scams.\n\nMade by @KING_HU_MAI"
+    await update.message.reply_text(msg, reply_markup=main_menu(update.effective_user.id))
     return ConversationHandler.END
 
-# --- REPORT SYSTEM (WITH PROOF) ---
-async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.message.reply_text("🚨 Who are you reporting? Send @username:")
-    return R_USER
+# --- FEATURE: CHECK SELLER ---
+async def check_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("🔍 Send the **@username** of the seller:")
+    return ST_CHECK
 
-async def report_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['target'] = update.message.text
-    await update.message.reply_text("📝 What is the reason? (Scam, Fake, etc.)")
-    return R_REASON
+async def do_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.message.text.replace("@", "").strip()
+    user = database.get_user(target)
+    if not user:
+        await update.message.reply_text("❓ **User not found.** They have no history here.")
+    else:
+        badge = "👑 VERIFIED" if user[5] else "👤 Standard"
+        res = (f"👤 **User:** @{user[1]}\n"
+               f"📊 **Trust Score:** {user[4]}\n"
+               f"✅ Vouches: {user[3]} | 🚩 Reports: {user[2]}\n"
+               f"📢 **Status:** {user[7]} {badge}")
+        await update.message.reply_text(res, reply_markup=main_menu(update.effective_user.id))
+    return ConversationHandler.END
 
-async def report_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['reason'] = update.message.text
-    await update.message.reply_text("📸 Send a Screenshot as proof (Photo):")
-    return R_PROOF
+# --- FEATURE: REPORT SYSTEM ---
+async def report_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("🚨 Send the **@username** of the scammer:")
+    return ST_REP_USR
 
-async def report_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rep_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['target'] = update.message.text.replace("@", "")
+    kbd = [[InlineKeyboardButton("Scam", callback_data="r_scam"), InlineKeyboardButton("Fake Acc", callback_data="r_fake")],
+           [InlineKeyboardButton("No Response", callback_data="r_ghost")]]
+    await update.message.reply_text("Select Report Type:", reply_markup=InlineKeyboardMarkup(kbd))
+    return ST_REP_TYPE
+
+async def rep_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    context.user_data['type'] = update.callback_query.data
+    await update.callback_query.message.reply_text("📸 **PROOF REQUIRED.** Send a screenshot photo:")
+    return ST_REP_PROOF
+
+async def rep_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        await update.message.reply_text("❌ Please send an actual photo.")
+        return ST_REP_PROOF
+    
     photo = update.message.photo[-1].file_id
     target = context.user_data['target']
     
     # Send to Admin for Approval
-    kbd = [[InlineKeyboardButton("✅ Approve (+5 Vouch)", callback_data=f"apprv_v_{target}"),
-            InlineKeyboardButton("❌ Reject", callback_data="rej")]]
+    kbd = [[InlineKeyboardButton("✅ Approve (+5 Vouch)", callback_data=f"adm_app_{target}"),
+            InlineKeyboardButton("❌ Reject", callback_data="adm_rej")]]
     
-    await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo, 
-                               caption=f"📥 **New Report**\nFrom: {update.effective_user.username}\nTarget: {target}\nReason: {context.user_data['reason']}",
+    await context.bot.send_photo(ADMIN_ID, photo, 
+                               caption=f"📥 **NEW REPORT**\nBy: @{update.effective_user.username}\nTarget: @{target}\nType: {context.user_data['type']}",
                                reply_markup=InlineKeyboardMarkup(kbd))
     
-    await update.message.reply_text("✅ Report sent to Admin for review.")
+    await update.message.reply_text("✅ Report submitted! Admin will verify proofs.")
     return ConversationHandler.END
 
-# --- ADMIN BUTTON HANDLERS ---
-async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    
-    if data.startswith("apprv_v_"):
-        target = data.replace("apprv_v_", "")
-        database.update_score(target, v_mod=1) # Increment vouch
-        await query.message.edit_caption("✅ Report Approved! Vouch added to seller.")
+# --- ADMIN PANEL COMMANDS ---
+async def admin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        target = context.args[0].replace("@", "")
+        conn = sqlite3.connect('safedeal.db')
+        conn.execute("UPDATE users SET is_verified = 1 WHERE username = ?", (target,))
+        conn.commit()
+        database.recalculate_score(target)
+        await update.message.reply_text(f"👑 @{target} is now VERIFIED.")
+    except: await update.message.reply_text("Usage: /verify @username")
 
-# --- MAIN ---
+# --- MAIN RUNNER ---
 def main():
     database.init_db()
-    threading.Thread(target=run_flask, daemon=True).start()
-    
+    threading.Thread(target=run_s, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
-    
-    # Conv Handlers
-    check_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(check_start, pattern="^check$")],
-        states={CHECK: [MessageHandler(filters.TEXT, do_check)]},
-        fallbacks=[CommandHandler('start', start)]
-    )
-    
-    report_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(report_start, pattern="^report$")],
+
+    conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(check_init, pattern="^m_check$"),
+            CallbackQueryHandler(report_init, pattern="^m_rep$"),
+            CallbackQueryHandler(start, pattern="^m_start$"),
+        ],
         states={
-            R_USER: [MessageHandler(filters.TEXT, report_user)],
-            R_REASON: [MessageHandler(filters.TEXT, report_reason)],
-            R_PROOF: [MessageHandler(filters.PHOTO, report_proof)]
+            ST_CHECK: [MessageHandler(filters.TEXT & ~filters.COMMAND, do_check)],
+            ST_REP_USR: [MessageHandler(filters.TEXT & ~filters.COMMAND, rep_user)],
+            ST_REP_TYPE: [CallbackQueryHandler(rep_type, pattern="^r_")],
+            ST_REP_PROOF: [MessageHandler(filters.PHOTO, rep_done)],
         },
-        fallbacks=[CommandHandler('start', start)]
+        fallbacks=[CommandHandler("start", start)],
+        allow_reentry=True
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(check_conv)
-    app.add_handler(report_conv)
-    app.add_handler(CallbackQueryHandler(handle_approval, pattern="^apprv_"))
-    app.add_handler(CallbackQueryHandler(start, pattern="^start$")) # Force join retry
-
-    print("Bot is 100% Live...")
-    app.run_polling()
+    app.add_handler(CommandHandler("verify", admin_verify))
+    app.add_handler(conv)
+    
+    print("SafeDeal Bot: 100% ONLINE")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
