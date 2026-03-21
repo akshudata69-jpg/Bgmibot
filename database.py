@@ -3,38 +3,29 @@ import sqlite3
 def init_db():
     conn = sqlite3.connect('safedeal.db')
     c = conn.cursor()
-    # Users table for stats and broadcasting
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                 user_id INTEGER PRIMARY KEY, 
-                 username TEXT, 
-                 reports INTEGER DEFAULT 0, 
-                 vouches INTEGER DEFAULT 0, 
-                 score INTEGER DEFAULT 50, 
-                 is_verified INTEGER DEFAULT 0, 
-                 status TEXT DEFAULT '🟡 Safe')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, score INTEGER DEFAULT 50, status TEXT DEFAULT '🟡 Safe')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS sellers (username TEXT PRIMARY KEY, deals TEXT, channel TEXT, experience TEXT)''')
     conn.commit()
     conn.close()
 
-def add_user(user_id, username):
+def add_user(uid, user):
     conn = sqlite3.connect('safedeal.db')
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (uid, user))
     conn.commit()
     conn.close()
 
-def get_all_users():
+def get_all_uids():
     conn = sqlite3.connect('safedeal.db')
     c = conn.cursor()
     c.execute("SELECT user_id FROM users")
-    users = [row[0] for row in c.fetchall()]
+    data = [row[0] for row in c.fetchall()]
     conn.close()
-    return users
+    return data
 
-def get_user_data(username):
-    username = username.replace("@", "").strip().lower()
+def save_reg(user, deals, channel, exp):
     conn = sqlite3.connect('safedeal.db')
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE LOWER(username) = ?", (username,))
-    res = c.fetchone()
+    c.execute("INSERT OR REPLACE INTO sellers VALUES (?, ?, ?, ?)", (user, deals, channel, exp))
+    conn.commit()
     conn.close()
-    return res
